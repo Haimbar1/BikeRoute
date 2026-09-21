@@ -1,4 +1,4 @@
-const C='bike-v3',A=['./','index.html','style.css','app.js','manifest.json','icon.svg','https://unpkg.com/leaflet@1.9.4/dist/leaflet.css','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'];
+const C='bike-v4',A=['./','index.html','style.css','app.js','manifest.json','icon.svg','favicon.ico','icon-192.png','icon-512.png','https://unpkg.com/leaflet@1.9.4/dist/leaflet.css','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(C).then(c=>c.addAll(A).catch(()=>{}))));
 self.addEventListener('fetch',e=>{
   if(/arcgisonline|cyclosm|opentopomap/.test(e.request.url)){ // cache visited tiles for offline
