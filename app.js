@@ -284,4 +284,9 @@ async function connectHR(){
 }
 $('ble').onclick=connectHR;
 
+// keep the screen upright (works when installed to the home screen; ignored in a plain browser tab)
+const lockPortrait=()=>{try{screen.orientation.lock('portrait').catch(()=>{})}catch{}};
+lockPortrait();
+$('go').addEventListener('click',lockPortrait);
+
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
