@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>רכיבה על מסלול</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map"></div>
+
+<div id="stats">
+  <div class="cell"><b id="speed">0</b><span>קמ"ש</span></div>
+  <div class="cell"><b id="hr">--</b><span>דופק</span></div>
+  <div class="cell"><b id="grade">--</b><span>שיפוע %</span></div>
+  <div class="cell"><b id="time">0:00</b><span>זמן</span></div>
+  <div class="cell"><b id="dist">0.0</b><span>ק"מ נרכבו</span></div>
+  <div class="cell"><b id="left">--</b><span>ק"מ נותרו</span></div>
+  <div class="cell"><b id="climb">0</b><span>מ' טיפוס</span></div>
+  <div class="cell"><b id="climbleft">--</b><span>מ' טיפוס נותר</span></div>
+</div>
+<div id="warn" hidden>מחוץ למסלול!</div>
+
+<div id="bar">
+  <label class="btn" for="file">טען GPX</label>
+  <input id="file" type="file" accept=".gpx,application/gpx+xml,.xml" hidden>
+  <button id="lib" class="btn">מסלולים</button>
+  <button id="go" class="btn primary">התחל רכיבה</button>
+  <button id="ble" class="btn">דופק BT</button>
+  <button id="follow" class="btn on">עקוב</button>
+</div>
+<div id="msg"></div>
+<div id="sheet" hidden>
+  <div class="head"><b>המסלולים שלי</b><button id="sheetClose" class="btn">סגור</button></div>
+  <div id="list"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
