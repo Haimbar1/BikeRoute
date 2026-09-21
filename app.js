@@ -13,6 +13,7 @@ map.on('baselayerchange',e=>{try{localStorage.setItem('base',e.name)}catch{}});
 
 let route=null,routeLayer=null,meMarker=null,trail=L.polyline([],{color:'#f59e0b',weight:5}).addTo(map);
 let watchId=null,following=true,wakeLock=null,timer=null,S=null;
+let turns=[],climbs=[],turnMarker=null;
 const msg=t=>$('msg').textContent=t||'';
 
 /* ---------- geo helpers ---------- */
@@ -59,7 +60,8 @@ function showRoute(r){
   map.fitBounds(L.latLngBounds(r.ll),{padding:[60,20]});
   $('left').textContent=(r.total/1000).toFixed(1);
   $('climbleft').textContent=Math.round(r.totalGain);
-  msg(`מסלול: ${(r.total/1000).toFixed(1)} ק"מ, טיפוס ${Math.round(r.totalGain)} מ'`);
+  turns=findTurns(r);climbs=findClimbs(r);hideGuidance();
+  msg(`מסלול: ${(r.total/1000).toFixed(1)} ק"מ, טיפוס ${Math.round(r.totalGain)} מ' · ${turns.length} פניות, ${climbs.length} עליות`);
 }
 /* ---------- route library (IndexedDB) ---------- */
 const db=new Promise((res,rej)=>{
@@ -268,10 +270,112 @@ function onPos(pos){
       S.grade=S.grade==null?g:S.grade*.7+g*.3;
       $('grade').textContent=S.grade.toFixed(1);
     }else $('grade').textContent='--';
-    $('warn').hidden=n.d<60;
+    $('warn').hidden=n.d<OFF_ROUTE;
+    updateGuidance(n.i);
   }
   if(following)map.setView(p,Math.max(map.getZoom(),16),{animate:true});
 }
+/* ---------- guidance: off-route alert, next turn, next climb ---------- */
+const OFF_ROUTE=400;   // meters from the route before the "off route" alert
+const fmtD=m=>m<1000?`${Math.max(10,Math.round(m/10)*10)} מ'`:`${(m/1000).toFixed(1)} ק"מ`;
+
+// A turn = heading change of 55°+ between the 40m before and the 40m after a point.
+function findTurns(r){
+  const L=r.ll,cum=r.cum,n=L.length,raw=[];
+  for(let i=1;i<n-1;i++){
+    let a=i;while(a>0&&cum[i]-cum[a]<40)a--;
+    let b=i;while(b<n-1&&cum[b]-cum[i]<40)b++;
+    if(cum[i]-cum[a]<20||cum[b]-cum[i]<20)continue;
+    const d=((bearing(L[i],L[b])-bearing(L[a],L[i])+540)%360)-180;
+    if(Math.abs(d)>=55)raw.push({i,d});
+  }
+  const out=[];
+  raw.forEach(t=>{           // merge neighbours within 50m, keep the sharpest
+    const last=out[out.length-1];
+    if(last&&cum[t.i]-cum[last.i]<50){if(Math.abs(t.d)>Math.abs(last.d))out[out.length-1]=t}
+    else out.push(t);
+  });
+  return out.map(t=>({cum:cum[t.i],d:t.d,ll:L[t.i],i:t.i}));
+}
+function turnInfo(d){
+  const a=Math.abs(d);
+  if(a>150)return{arrow:'↩',text:'פרסה'};
+  return{arrow:d>0?'↱':'↰',text:`${a>110?'פנייה חדה':a>80?'פנייה':'פנייה קלה'} ${d>0?'ימינה':'שמאלה'}`};
+}
+
+// A climb = sustained rise (2.5m per 100m) that gains 15m+ over 200m+, ending at its peak.
+function findClimbs(r){
+  const step=25,m=Math.floor(r.total/step)+1,e=[];
+  if(r.cum.length<2||m<10)return[];
+  let j=0;
+  for(let k=0;k<m;k++){
+    const d=k*step;while(j<r.cum.length-2&&r.cum[j+1]<d)j++;
+    const c0=r.cum[j],c1=r.cum[j+1],t=c1>c0?Math.min(1,Math.max(0,(d-c0)/(c1-c0))):0;
+    e.push(r.ele[j]+(r.ele[j+1]-r.ele[j])*t);
+  }
+  const s=e.map((_,k)=>{let a=0,c=0;for(let q=-2;q<=2;q++)if(e[k+q]!==undefined){a+=e[k+q];c++}return a/c});
+  const out=[];let k=0;
+  while(k<m-4){
+    if(s[k+4]-s[k]<2.5){k++;continue}
+    let st=k,back=0;while(st>0&&back<8&&s[st-1]<s[st]-0.3){st--;back++}
+    let peak=k,q=k;
+    while(q<m-1&&s[q]>s[peak]-6){if(s[q]>=s[peak])peak=q;q++}
+    const gain=s[peak]-s[st],len=(peak-st)*step;
+    if(gain>=15&&len>=200){
+      let mx=0;for(let z=st;z+4<=peak;z++)mx=Math.max(mx,s[z+4]-s[z]);
+      out.push({startCum:st*step,endCum:peak*step,gain,len,avg:gain/len*100,max:mx,prof:s.slice(st,peak+1)});
+      k=peak+1;
+    }else k=Math.max(k+1,st+1);
+  }
+  return out;
+}
+function drawClimb(c,pos){
+  const cv=$('climbCv'),ctx=cv.getContext('2d'),dpr=window.devicePixelRatio||1;
+  const W=cv.clientWidth,H=cv.clientHeight;if(!W||!H)return;
+  cv.width=W*dpr;cv.height=H*dpr;ctx.scale(dpr,dpr);
+  const p=c.prof,n=p.length,min=Math.min(...p),max=Math.max(...p),rng=Math.max(1,max-min);
+  const x=k=>k/(n-1)*W,y=v=>H-2-(v-min)/rng*(H-16);
+  for(let k=0;k<n-1;k++){
+    const a=Math.max(0,k-2),b=Math.min(n-1,k+2);
+    const g=Math.max(0,(p[b]-p[a])/((b-a)*25)*100);
+    ctx.fillStyle=`hsl(${120-Math.min(g,12)/12*120},75%,45%)`;
+    ctx.beginPath();ctx.moveTo(x(k),H);ctx.lineTo(x(k),y(p[k]));ctx.lineTo(x(k+1)+0.5,y(p[k+1]));ctx.lineTo(x(k+1)+0.5,H);ctx.closePath();ctx.fill();
+  }
+  if(pos>=c.startCum){
+    const px=Math.min(1,(pos-c.startCum)/(c.endCum-c.startCum))*W;
+    ctx.fillStyle='#fff';ctx.fillRect(px-1,0,2,H);
+  }
+  ctx.fillStyle='#fff';ctx.font='11px system-ui';
+  ctx.textAlign='left';ctx.fillText(`${Math.round(max)} מ'`,4,11);
+  ctx.textAlign='right';ctx.fillText(`${(c.len/1000).toFixed(1)} ק"מ`,W-4,11);
+}
+function hideGuidance(){
+  $('turn').hidden=true;$('climbCard').hidden=true;document.body.classList.remove('hasclimb');
+  if(turnMarker){turnMarker.remove();turnMarker=null}
+}
+function updateGuidance(i){
+  const pos=route.cum[i],el=$('turn'),t=turns.find(t=>t.cum>pos+10);
+  el.hidden=false;
+  if(t){
+    const inf=turnInfo(t.d),key=t.i+inf.arrow;
+    el.textContent=`${inf.arrow} ${inf.text} בעוד ${fmtD(t.cum-pos)}`;
+    if(!turnMarker||turnMarker._key!==key){
+      if(turnMarker)turnMarker.remove();
+      turnMarker=L.marker(t.ll,{icon:L.divIcon({className:'',html:`<div class="tm">${inf.arrow}</div>`,iconSize:[34,34]}),interactive:false,zIndexOffset:500}).addTo(map);
+      turnMarker._key=key;
+    }
+  }else{
+    el.textContent=`🏁 סוף המסלול בעוד ${fmtD(Math.max(0,route.total-pos))}`;
+    if(turnMarker){turnMarker.remove();turnMarker=null}
+  }
+  const c=climbs.find(c=>c.endCum>pos+10),card=$('climbCard');
+  if(!c){card.hidden=true;document.body.classList.remove('hasclimb');return}
+  card.hidden=false;document.body.classList.add('hasclimb');
+  $('climbTxt').textContent=pos<c.startCum?`עלייה בעוד ${fmtD(c.startCum-pos)}`:`בעלייה · נותרו ${fmtD(c.endCum-pos)} לפסגה`;
+  $('climbTxt2').textContent=`אורך ${(c.len/1000).toFixed(1)} ק"מ · +${Math.round(c.gain)} מ' · ממוצע ${c.avg.toFixed(1)}% · מקס' ${c.max.toFixed(0)}%`;
+  drawClimb(c,pos);
+}
+
 async function startRide(){
   if(!navigator.geolocation)return msg('אין תמיכה ב-GPS');
   S={dist:0,climb:0,altSm:null,altRef:null,last:null,idx:null,grade:null,t0:Date.now()};
@@ -285,6 +389,7 @@ function stopRide(){
   navigator.geolocation.clearWatch(watchId);watchId=null;clearInterval(timer);
   try{wakeLock&&wakeLock.release()}catch{}
   $('go').textContent='התחל רכיבה';$('go').classList.remove('stop');
+  hideGuidance();$('warn').hidden=true;
   msg(`סיכום: ${(S.dist/1000).toFixed(2)} ק"מ, ${Math.round(S.climb)} מ' טיפוס, ${$('time').textContent}`);
 }
 $('go').onclick=()=>watchId==null?startRide():stopRide();
