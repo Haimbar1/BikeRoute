@@ -204,13 +204,34 @@ const fmtT=s=>{
   s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
   return h?`${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`:`${m}:${String(x).padStart(2,'0')}`;
 };
-function nearest(p){
-  let bi=0,bd=Infinity;
-  for(let i=0;i<route.ll.length;i++){
-    const dy=route.ll[i][0]-p[0],dx=(route.ll[i][1]-p[1])*Math.cos(rad(p[0]));
-    const d=dy*dy+dx*dx;if(d<bd){bd=d;bi=i}
+const bearing=(a,b)=>Math.atan2(Math.sin(rad(b[1]-a[1]))*Math.cos(rad(b[0])),
+  Math.cos(rad(a[0]))*Math.sin(rad(b[0]))-Math.sin(rad(a[0]))*Math.cos(rad(b[0]))*Math.cos(rad(b[1]-a[1])))*180/Math.PI;
+// Match the rider to a route point. Out-and-back routes pass the same road twice, so follow progress
+// (search only near the last match) and, when re-acquiring, prefer the direction of travel.
+function nearest(p,heading){
+  const L=route.ll,cum=route.cum,n=L.length,cosL=Math.cos(rad(p[0]));
+  const d2=i=>{const dy=L[i][0]-p[0],dx=(L[i][1]-p[1])*cosL;return dy*dy+dx*dx};
+  const meters=d=>Math.sqrt(d)*111000;
+  const scan=(a,b)=>{let bi=a,bd=Infinity;for(let i=a;i<=b;i++){const d=d2(i);if(d<bd){bd=d;bi=i}}return{i:bi,d:bd}};
+  if(S.idx!=null){
+    let lo=S.idx,hi=S.idx;
+    while(lo>0&&cum[S.idx]-cum[lo]<300)lo--;
+    while(hi<n-1&&cum[hi]-cum[S.idx]<800)hi++;
+    const w=scan(lo,hi);
+    if(meters(w.d)<80){S.idx=w.i;return{i:w.i,d:hav(p,L[w.i])}}
   }
-  return{i:bi,d:hav(p,route.ll[bi])};
+  const g=scan(0,n-1),lim=meters(g.d)+30;
+  let pick=null,first=null;
+  for(let i=0;i<n-1;i++){
+    if(meters(d2(i))>lim)continue;
+    if(first==null)first=i;
+    if(heading!=null&&!isNaN(heading)){
+      const diff=Math.abs(((bearing(L[i],L[Math.min(n-1,i+3)])-heading+540)%360)-180);
+      if(diff<90){pick=i;break}
+    }
+  }
+  const i=pick!=null?pick:(first!=null?first:g.i);
+  S.idx=i;return{i,d:hav(p,L[i])};
 }
 function onPos(pos){
   const c=pos.coords,p=[c.latitude,c.longitude];
@@ -234,19 +255,26 @@ function onPos(pos){
   $('dist').textContent=(S.dist/1000).toFixed(1);
   $('climb').textContent=Math.round(S.climb);
   if(route){
-    const n=nearest(p);
+    const n=nearest(p,c.speed>1.5?c.heading:null);
     $('left').textContent=Math.max(0,(route.total-route.cum[n.i])/1000).toFixed(1);
     $('climbleft').textContent=Math.round(route.totalGain-route.gain[n.i]);
-    let j=n.i;while(j<route.ll.length-1&&route.cum[j]-route.cum[n.i]<60)j++;   // grade over next ~60m
-    const run=route.cum[j]-route.cum[n.i];
-    $('grade').textContent=run>20?((route.ele[j]-route.ele[n.i])/run*100).toFixed(1):'--';
+    // grade over ~150m ahead (~150m behind near the end), smoothed
+    let a=n.i,b=n.i;
+    while(b<route.ll.length-1&&route.cum[b]-route.cum[n.i]<150)b++;
+    if(route.cum[b]-route.cum[a]<50)while(a>0&&route.cum[n.i]-route.cum[a]<150)a--;
+    const run=route.cum[b]-route.cum[a];
+    if(run>=50){
+      const g=(route.ele[b]-route.ele[a])/run*100;
+      S.grade=S.grade==null?g:S.grade*.7+g*.3;
+      $('grade').textContent=S.grade.toFixed(1);
+    }else $('grade').textContent='--';
     $('warn').hidden=n.d<60;
   }
   if(following)map.setView(p,Math.max(map.getZoom(),16),{animate:true});
 }
 async function startRide(){
   if(!navigator.geolocation)return msg('אין תמיכה ב-GPS');
-  S={dist:0,climb:0,altSm:null,altRef:null,last:null,t0:Date.now()};
+  S={dist:0,climb:0,altSm:null,altRef:null,last:null,idx:null,grade:null,t0:Date.now()};
   trail.setLatLngs([]);
   watchId=navigator.geolocation.watchPosition(onPos,e=>msg('שגיאת GPS: '+e.message),{enableHighAccuracy:true,maximumAge:0,timeout:20000});
   timer=setInterval(()=>$('time').textContent=fmtT((Date.now()-S.t0)/1000),1000);
