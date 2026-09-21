@@ -34,8 +34,24 @@
 </div>
 <div id="msg"></div>
 <div id="sheet" hidden>
-  <div class="head"><b>המסלולים שלי</b><button id="sheetClose" class="btn">סגור</button></div>
+  <div class="head"><b>המסלולים שלי</b><span><button id="newRoute" class="btn primary">+ מסלול חדש</button> <button id="sheetClose" class="btn">סגור</button></span></div>
   <div id="list"></div>
+</div>
+<div id="creator" hidden>
+  <div class="crow"><b id="crInfo">הקש על המפה כדי להוסיף נקודות</b></div>
+  <div class="crow">
+    <select id="crMode">
+      <option value="bike">הצמד לנתיבי אופניים</option>
+      <option value="road">הצמד לכבישים</option>
+      <option value="line">קו ישר</option>
+    </select>
+  </div>
+  <div class="crow">
+    <button id="crUndo" class="btn">בטל נקודה</button>
+    <button id="crClear" class="btn">נקה</button>
+    <button id="crSave" class="btn primary">שמור</button>
+    <button id="crExit" class="btn">יציאה</button>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

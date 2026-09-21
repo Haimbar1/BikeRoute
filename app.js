@@ -35,6 +35,9 @@ function parseGPX(text){
     const e=p.getElementsByTagName('ele')[0];
     ele.push(e?+e.textContent:NaN);
   });
+  return buildRoute(ll,ele);
+}
+function buildRoute(ll,ele){
   let last=ele.find(v=>!isNaN(v))||0;
   for(let i=0;i<ele.length;i++){if(isNaN(ele[i]))ele[i]=last;else last=ele[i];}
   const sm=ele.map((_,i)=>{let s=0,n=0;for(let k=-2;k<=2;k++){const v=ele[i+k];if(v!==undefined){s+=v;n++}}return s/n;});
@@ -95,11 +98,96 @@ async function renderLib(){
     n.appendChild(sm);
     const open=document.createElement('button');open.className='btn primary';open.textContent='פתח';
     open.onclick=()=>{showRoute(it.route);setLast(it.id);$('sheet').hidden=true};
+    const gpx=document.createElement('button');gpx.className='btn';gpx.textContent='GPX';
+    gpx.onclick=()=>downloadGPX(it.name,it.route);
     const del=document.createElement('button');del.className='btn del';del.textContent='מחק';
     del.onclick=async()=>{if(confirm(`למחוק את "${it.name}"?`)){await delRoute(it.id);renderLib()}};
-    d.append(n,open,del);box.appendChild(d);
+    d.append(n,open,gpx,del);box.appendChild(d);
   });
 }
+function downloadGPX(name,r){
+  const esc=s=>s.replace(/[<&>]/g,'');
+  const pts=r.ll.map((p,i)=>`<trkpt lat="${p[0]}" lon="${p[1]}"><ele>${r.ele[i].toFixed(1)}</ele></trkpt>`).join('\n');
+  const x=`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="BikeRoute" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${esc(name)}</name><trkseg>\n${pts}\n</trkseg></trk></gpx>`;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([x],{type:'application/gpx+xml'}));
+  a.download=name+'.gpx';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+/* ---------- route creator ---------- */
+let cr=null;
+async function snap(a,b,mode){
+  if(mode==='line')return[a,b];
+  const host=mode==='bike'?'routing.openstreetmap.de/routed-bike':'router.project-osrm.org';
+  try{
+    const r=await(await fetch(`https://${host}/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`)).json();
+    return r.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);
+  }catch{msg('הניתוב נכשל, משתמש בקו ישר');return[a,b]}
+}
+function crRedraw(){
+  const all=cr.legs.flatMap(l=>l.coords||[]);
+  cr.line.setLatLngs(all);
+  const ready=cr.legs.every(l=>l.coords);
+  let len=0;for(let i=1;i<all.length;i++)len+=hav(all[i-1],all[i]);
+  $('crInfo').textContent=cr.pts.length?`${cr.pts.length} נקודות · ${(len/1000).toFixed(1)} ק"מ${ready?'':' (מחשב...)'}`:'הקש על המפה כדי להוסיף נקודות';
+}
+function crAdd(e){
+  const p=[e.latlng.lat,e.latlng.lng];
+  const m=L.marker(p,{icon:L.divIcon({className:'',html:`<div class="pt">${cr.pts.length+1}</div>`,iconSize:[22,22]})}).addTo(cr.layer);
+  if(cr.pts.length){
+    const leg={coords:null};cr.legs.push(leg);
+    snap(cr.pts[cr.pts.length-1],p,$('crMode').value).then(c=>{leg.coords=c;if(cr)crRedraw()});
+  }
+  cr.pts.push(p);cr.markers.push(m);crRedraw();
+}
+function crReset(){
+  cr.layer.clearLayers();cr.line=L.polyline([],{color:'#2563eb',weight:6}).addTo(cr.layer);
+  cr.pts=[];cr.legs=[];cr.markers=[];crRedraw();
+}
+function startCreate(){
+  $('sheet').hidden=true;$('creator').hidden=false;$('bar').hidden=true;
+  document.body.classList.add('creating');
+  cr={layer:L.layerGroup().addTo(map)};crReset();
+  following=false;$('follow').classList.remove('on');
+  map.on('click',crAdd);
+}
+function exitCreate(){
+  map.off('click',crAdd);cr.layer.remove();cr=null;
+  $('creator').hidden=true;$('bar').hidden=false;document.body.classList.remove('creating');
+}
+$('newRoute').onclick=startCreate;
+$('crExit').onclick=exitCreate;
+$('crClear').onclick=crReset;
+$('crUndo').onclick=()=>{
+  if(!cr.pts.length)return;
+  cr.pts.pop();cr.layer.removeLayer(cr.markers.pop());
+  if(cr.legs.length)cr.legs.pop();
+  crRedraw();
+};
+async function elevations(pts){
+  const out=[];
+  for(let i=0;i<pts.length;i+=100){
+    const s=pts.slice(i,i+100);
+    const u=`https://api.open-meteo.com/v1/elevation?latitude=${s.map(p=>p[0].toFixed(5)).join(',')}&longitude=${s.map(p=>p[1].toFixed(5)).join(',')}`;
+    out.push(...(await(await fetch(u)).json()).elevation);
+  }
+  return out;
+}
+$('crSave').onclick=async()=>{
+  if(cr.pts.length<2)return msg('צריך לפחות 2 נקודות');
+  if(!cr.legs.every(l=>l.coords))return msg('המתן, המסלול עדיין מחושב');
+  const name=(prompt('שם למסלול:')||'').trim();
+  if(!name)return;
+  msg('שומר...');
+  let ll=cr.legs.flatMap(l=>l.coords);
+  const step=Math.max(1,Math.ceil(ll.length/400));
+  ll=ll.filter((_,i)=>i%step===0||i===ll.length-1);
+  let ele;
+  try{ele=await elevations(ll)}catch{ele=ll.map(()=>0);msg('נתוני גובה לא זמינים, נשמר בלי גובה')}
+  const r=buildRoute(ll,ele);
+  const id=await saveRoute(name,r);setLast(id);
+  exitCreate();showRoute(r);
+};
 $('lib').onclick=async()=>{await renderLib();$('sheet').hidden=false};
 $('sheetClose').onclick=()=>$('sheet').hidden=true;
 (async()=>{
