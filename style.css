@@ -34,6 +34,8 @@ body.creating #turn,body.creating #climbCard{display:none}
 .crow:last-child{margin-bottom:0}
 .crow select{flex:1;padding:10px;border-radius:10px;border:0;background:#374151;color:#fff;font-size:15px}
 .crow .btn{padding:10px 4px}
+.crow .undo{flex:1.4;background:#b45309;font-weight:700}
+.crow .btn:disabled{opacity:.4}
 .creating #map{cursor:crosshair}
 .pt{width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;border:2px solid #fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .leaflet-top.leaflet-left{top:160px}

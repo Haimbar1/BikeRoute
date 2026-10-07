@@ -118,12 +118,16 @@ function downloadGPX(name,r){
 
 /* ---------- route creator ---------- */
 let cr=null;
+// road bike: BRouter "fastbike" keeps to paved roads and skips motorways, dirt tracks and park paths
+const osrm=async(a,b)=>(await(await fetch(`https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`)).json()).routes[0].geometry.coordinates;
+const brouter=async(a,b)=>(await(await fetch(`https://brouter.de/brouter?lonlats=${a[1]},${a[0]}|${b[1]},${b[0]}&profile=fastbike&alternativeidx=0&format=geojson`)).json()).features[0].geometry.coordinates;
 async function snap(a,b,mode){
   if(mode==='line')return[a,b];
-  const host=mode==='bike'?'routing.openstreetmap.de/routed-bike':'router.project-osrm.org';
   try{
-    const r=await(await fetch(`https://${host}/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`)).json();
-    return r.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);
+    let c;
+    if(mode==='bike'){try{c=await brouter(a,b)}catch{msg('ניתוב אופני כביש נכשל, מנתב לפי כבישים');c=await osrm(a,b)}}
+    else c=await osrm(a,b);
+    return c.map(p=>[p[1],p[0]]);
   }catch{msg('הניתוב נכשל, משתמש בקו ישר');return[a,b]}
 }
 function crRedraw(){
@@ -131,6 +135,7 @@ function crRedraw(){
   cr.line.setLatLngs(all);
   const ready=cr.legs.every(l=>l.coords);
   let len=0;for(let i=1;i<all.length;i++)len+=hav(all[i-1],all[i]);
+  $('crUndo').disabled=!cr.pts.length;
   $('crInfo').textContent=cr.pts.length?`${cr.pts.length} נקודות · ${(len/1000).toFixed(1)} ק"מ${ready?'':' (מחשב...)'}`:'הקש על המפה כדי להוסיף נקודות';
 }
 function crAdd(e){
@@ -152,6 +157,14 @@ function startCreate(){
   cr={layer:L.layerGroup().addTo(map)};crReset();
   following=false;$('follow').classList.remove('on');
   map.on('click',crAdd);
+  // start building where the rider is
+  const here=p=>{if(cr&&!cr.pts.length)map.setView(p,Math.max(map.getZoom(),15))};
+  if(meMarker){const l=meMarker.getLatLng();here([l.lat,l.lng])}
+  else if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{
+    const p=[pos.coords.latitude,pos.coords.longitude];
+    if(!meMarker)meMarker=L.marker(p,{icon:L.divIcon({className:'',html:'<div class="me"></div>',iconSize:[18,18]}),zIndexOffset:1000}).addTo(map);
+    here(p);
+  },()=>msg('לא ניתן לאתר את המיקום שלך'),{enableHighAccuracy:true,timeout:10000,maximumAge:60000});
 }
 function exitCreate(){
   map.off('click',crAdd);cr.layer.remove();cr=null;
@@ -208,32 +221,45 @@ const fmtT=s=>{
 };
 const bearing=(a,b)=>Math.atan2(Math.sin(rad(b[1]-a[1]))*Math.cos(rad(b[0])),
   Math.cos(rad(a[0]))*Math.sin(rad(b[0]))-Math.sin(rad(a[0]))*Math.cos(rad(b[0]))*Math.cos(rad(b[1]-a[1])))*180/Math.PI;
-// Match the rider to a route point. Out-and-back routes pass the same road twice, so follow progress
+// Match the rider to a spot on the route line (projected onto segments, since GPX points can be
+// hundreds of meters apart). Out-and-back routes pass the same road twice, so follow progress
 // (search only near the last match) and, when re-acquiring, prefer the direction of travel.
 function nearest(p,heading){
-  const L=route.ll,cum=route.cum,n=L.length,cosL=Math.cos(rad(p[0]));
-  const d2=i=>{const dy=L[i][0]-p[0],dx=(L[i][1]-p[1])*cosL;return dy*dy+dx*dx};
-  const meters=d=>Math.sqrt(d)*111000;
-  const scan=(a,b)=>{let bi=a,bd=Infinity;for(let i=a;i<=b;i++){const d=d2(i);if(d<bd){bd=d;bi=i}}return{i:bi,d:bd}};
+  const L=route.ll,cum=route.cum,n=L.length,kx=111320*Math.cos(rad(p[0])),ky=110540;
+  const seg=i=>{               // distance from p to segment i..i+1, and position along it
+    if(i>=n-1)return{i:n-1,t:0,d:Math.hypot((L[i][1]-p[1])*kx,(L[i][0]-p[0])*ky)};
+    const ax=(L[i][1]-p[1])*kx,ay=(L[i][0]-p[0])*ky,bx=(L[i+1][1]-p[1])*kx,by=(L[i+1][0]-p[0])*ky;
+    const dx=bx-ax,dy=by-ay,ll=dx*dx+dy*dy,t=ll?Math.min(1,Math.max(0,-(ax*dx+ay*dy)/ll)):0;
+    return{i,t,d:Math.hypot(ax+dx*t,ay+dy*t)};
+  };
+  const done=r=>{S.idx=r.i;const i=Math.min(r.i,n-2);r.pos=cum[r.i]+(r.i<n-1?(cum[i+1]-cum[i])*r.t:0);return r};
+  const scan=(a,b)=>{let best=null;for(let i=a;i<=b;i++){const r=seg(i);if(!best||r.d<best.d)best=r}return best};
   if(S.idx!=null){
     let lo=S.idx,hi=S.idx;
     while(lo>0&&cum[S.idx]-cum[lo]<300)lo--;
     while(hi<n-1&&cum[hi]-cum[S.idx]<800)hi++;
-    const w=scan(lo,hi);
-    if(meters(w.d)<80){S.idx=w.i;return{i:w.i,d:hav(p,L[w.i])}}
+    const w=scan(lo,Math.min(hi,n-2));
+    if(w.d<80)return done(w);
   }
-  const g=scan(0,n-1),lim=meters(g.d)+30;
+  const g=scan(0,Math.max(0,n-2)),lim=g.d+30;
   let pick=null,first=null;
   for(let i=0;i<n-1;i++){
-    if(meters(d2(i))>lim)continue;
-    if(first==null)first=i;
+    const r=seg(i);if(r.d>lim)continue;
+    if(first==null)first=r;
     if(heading!=null&&!isNaN(heading)){
-      const diff=Math.abs(((bearing(L[i],L[Math.min(n-1,i+3)])-heading+540)%360)-180);
-      if(diff<90){pick=i;break}
+      const diff=Math.abs(((bearing(L[i],L[i+1])-heading+540)%360)-180);
+      if(diff<90){pick=r;break}
     }
   }
-  const i=pick!=null?pick:(first!=null?first:g.i);
-  S.idx=i;return{i,d:hav(p,L[i])};
+  return done(pick||first||g);
+}
+// route elevation / cumulative gain at a distance along the route (linear between points)
+function along(arr,d){
+  const c=route.cum,n=c.length;
+  if(d<=0)return arr[0];if(d>=c[n-1])return arr[n-1];
+  let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(c[m]<=d)lo=m;else hi=m}
+  const t=c[hi]>c[lo]?(d-c[lo])/(c[hi]-c[lo]):0;
+  return arr[lo]+(arr[hi]-arr[lo])*t;
 }
 function onPos(pos){
   const c=pos.coords,p=[c.latitude,c.longitude];
@@ -258,25 +284,23 @@ function onPos(pos){
   $('climb').textContent=Math.round(S.climb);
   if(route){
     const n=nearest(p,c.speed>1.5?c.heading:null);
-    $('left').textContent=Math.max(0,(route.total-route.cum[n.i])/1000).toFixed(1);
-    $('climbleft').textContent=Math.round(route.totalGain-route.gain[n.i]);
-    // grade over ~150m ahead (~150m behind near the end), smoothed
-    let a=n.i,b=n.i;
-    while(b<route.ll.length-1&&route.cum[b]-route.cum[n.i]<150)b++;
-    if(route.cum[b]-route.cum[a]<50)while(a>0&&route.cum[n.i]-route.cum[a]<150)a--;
-    const run=route.cum[b]-route.cum[a];
-    if(run>=50){
-      const g=(route.ele[b]-route.ele[a])/run*100;
-      S.grade=S.grade==null?g:S.grade*.7+g*.3;
+    $('left').textContent=Math.max(0,(route.total-n.pos)/1000).toFixed(1);
+    $('climbleft').textContent=Math.max(0,Math.round(route.totalGain-along(route.gain,n.pos)));
+    // grade of the road under the rider: 40m behind to 60m ahead (shifted inward at the ends), lightly smoothed
+    const a=Math.max(0,Math.min(n.pos-40,route.total-100)),b=Math.min(route.total,a+100);
+    if(n.d<GRADE_MAX_OFF&&b-a>=30){
+      const g=(along(route.ele,b)-along(route.ele,a))/(b-a)*100;
+      S.grade=S.grade==null?g:S.grade*.5+g*.5;
       $('grade').textContent=S.grade.toFixed(1);
-    }else $('grade').textContent='--';
+    }else{S.grade=null;$('grade').textContent='--'}
     $('warn').hidden=n.d<OFF_ROUTE;
-    updateGuidance(n.i);
+    updateGuidance(n.pos);
   }
   if(following)map.setView(p,Math.max(map.getZoom(),16),{animate:true});
 }
 /* ---------- guidance: off-route alert, next turn, next climb ---------- */
-const OFF_ROUTE=400;   // meters from the route before the "off route" alert
+const OFF_ROUTE=500;   // meters from the route before the "off route" alert
+const GRADE_MAX_OFF=60; // beyond this the route's grade isn't the road you're on
 const fmtD=m=>m<1000?`${Math.max(10,Math.round(m/10)*10)} מ'`:`${(m/1000).toFixed(1)} ק"מ`;
 
 // A turn = heading change of 55°+ between the 40m before and the 40m after a point.
@@ -353,8 +377,8 @@ function hideGuidance(){
   $('turn').hidden=true;$('climbCard').hidden=true;document.body.classList.remove('hasclimb');
   if(turnMarker){turnMarker.remove();turnMarker=null}
 }
-function updateGuidance(i){
-  const pos=route.cum[i],el=$('turn'),t=turns.find(t=>t.cum>pos+10);
+function updateGuidance(pos){
+  const el=$('turn'),t=turns.find(t=>t.cum>pos+10);
   el.hidden=false;
   if(t){
     const inf=turnInfo(t.d),key=t.i+inf.arrow;
