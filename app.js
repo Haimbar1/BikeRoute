@@ -118,18 +118,21 @@ function downloadGPX(name,r){
 
 /* ---------- route creator ---------- */
 let cr=null;
-// road bike: BRouter "fastbike" keeps to paved roads and skips motorways, dirt tracks and park paths
+// BRouter profiles: "moped" takes main roads (trunk/primary) the direct way but never motorways or
+// dirt tracks; "fastbike" (road bike) avoids trunk roads, so it detours on quieter streets.
+const PROFILES={main:'moped',quiet:'fastbike'};
 const osrm=async(a,b)=>(await(await fetch(`https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`)).json()).routes[0].geometry.coordinates;
-const brouter=async(a,b)=>(await(await fetch(`https://brouter.de/brouter?lonlats=${a[1]},${a[0]}|${b[1]},${b[0]}&profile=fastbike&alternativeidx=0&format=geojson`)).json()).features[0].geometry.coordinates;
+const brouter=async(a,b,p)=>(await(await fetch(`https://brouter.de/brouter?lonlats=${a[1]},${a[0]}|${b[1]},${b[0]}&profile=${p}&alternativeidx=0&format=geojson`)).json()).features[0].geometry.coordinates;
 async function snap(a,b,mode){
   if(mode==='line')return[a,b];
   try{
     let c;
-    if(mode==='bike'){try{c=await brouter(a,b)}catch{msg('ניתוב אופני כביש נכשל, מנתב לפי כבישים');c=await osrm(a,b)}}
-    else c=await osrm(a,b);
+    try{c=await brouter(a,b,PROFILES[mode]||PROFILES.main)}catch{msg('הניתוב נכשל, מנתב לפי כבישי רכב');c=await osrm(a,b)}
     return c.map(p=>[p[1],p[0]]);
   }catch{msg('הניתוב נכשל, משתמש בקו ישר');return[a,b]}
 }
+try{const m=localStorage.getItem('crMode');if(m&&[...$('crMode').options].some(o=>o.value===m))$('crMode').value=m}catch{}
+$('crMode').onchange=()=>{try{localStorage.setItem('crMode',$('crMode').value)}catch{}};
 function crRedraw(){
   const all=cr.legs.flatMap(l=>l.coords||[]);
   cr.line.setLatLngs(all);
